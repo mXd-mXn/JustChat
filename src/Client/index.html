@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>JustChat — Кімнати</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="container">
+    <header class="top-bar">
+      <h1>JustChat</h1>
+      <div class="user-panel">
+        <span id="current-user-label"></span>
+        <button type="button" id="logout-btn" class="secondary small">Вийти</button>
+      </div>
+    </header>
+
+    <!-- Екран списку кімнат та створення нової -->
+    <section id="rooms-screen" class="card">
+      <div class="section-head">
+        <h2>Доступні кімнати</h2>
+        <button type="button" id="toggle-create-room-btn">+ Нова кімната</button>
+      </div>
+
+      <!-- Форма створення кімнати -->
+      <form id="create-room-form" class="sub-card hidden">
+        <h3>Створити кімнату</h3>
+        <label>
+          Назва кімнати
+          <input type="text" id="new-room-name" placeholder="Наприклад, Нічний чат" required />
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" id="new-room-private" />
+          Приватна кімната (захищена паролем)
+        </label>
+        <div id="new-room-password-wrap" class="hidden">
+          <label>
+            Пароль кімнати
+            <input type="password" id="new-room-password" placeholder="Введи пароль кімнати" />
+          </label>
+        </div>
+        <div class="row-actions">
+          <button type="submit">Створити</button>
+          <button type="button" id="cancel-create-room-btn" class="secondary">Скасувати</button>
+        </div>
+      </form>
+
+      <!-- Список кімнат -->
+      <div id="rooms-list" class="rooms-list"></div>
+
+      <!-- Запит пароля при натисканні на приватну кімнату -->
+      <div id="room-password-modal" class="sub-card hidden">
+        <h3 id="modal-room-title">Введи пароль кімнати</h3>
+        <form id="room-password-form">
+          <input type="password" id="join-room-password" placeholder="Пароль кімнати" required />
+          <div class="row-actions">
+            <button type="submit">Увійти</button>
+            <button type="button" id="cancel-room-password-btn" class="secondary">Скасувати</button>
+          </div>
+        </form>
+      </div>
+
+      <p id="rooms-error" class="error"></p>
+    </section>
+
+    <!-- Екран самого чату -->
+    <section id="chat-screen" class="card hidden">
+      <div class="chat-header">
+        <div>
+          <strong id="current-room-title">Кімната</strong>
+          <span id="status-badge" class="status">Онлайн</span>
+        </div>
+        <button type="button" id="leave-room-btn" class="secondary">До кімнат</button>
+      </div>
+
+      <div id="messages-box" class="messages"></div>
+
+      <form id="message-form" class="message-form">
+        <input type="text" id="message-input" placeholder="Напиши повідомлення..." autocomplete="off" required />
+        <button type="submit">Надіслати</button>
+      </form>
+    </section>
+  </div>
+
+  <script src="/chat.js"></script>
+</body>
+</html>

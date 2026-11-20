@@ -23,6 +23,11 @@ export const userRepo = {
     stmt.run(username, email, passwordHash, Date.now());
   },
 
+  getUserByUsername(username) {
+    const stmt = usersDb.prepare('SELECT * FROM users WHERE username = ?');
+    return stmt.get(username);
+  },
+  
   getUserByEmail(email) {
     const stmt = usersDb.prepare('SELECT * FROM users WHERE email = ?');
     return stmt.get(email);
