@@ -24,7 +24,7 @@ memoryDb.exec(`
 export const roomRepo = {
   createRoom(id, name, passwordHash = null) {
     const stmt = memoryDb.prepare(
-      'INSERT OR IGNORE INTO rooms (id, name, password_hash, created_at) VALUES (?, ?, ?, ?)'
+      'INSERT INTO rooms (id, name, password_hash, created_at) VALUES (?, ?, ?, ?)'
     );
     stmt.run(id, name, passwordHash, Date.now());
   },
@@ -32,6 +32,17 @@ export const roomRepo = {
   getRoom(id) {
     const stmt = memoryDb.prepare('SELECT id, name, password_hash FROM rooms WHERE id = ?');
     return stmt.get(id);
+  },
+
+  getAllRooms() {
+    const stmt = memoryDb.prepare(
+      'SELECT id, name, (password_hash IS NOT NULL) AS hasPassword FROM rooms ORDER BY created_at ASC'
+    );
+    return stmt.all().map((row) => ({
+      id: row.id,
+      name: row.name,
+      hasPassword: Boolean(row.hasPassword)
+    }));
   },
 
   deleteRoom(id) {
