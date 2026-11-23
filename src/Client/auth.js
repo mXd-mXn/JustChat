@@ -1,4 +1,4 @@
-if (sessionStorage.getItem('justchat_user')) {
+if (sessionStorage.getItem('justchat_session')) {
   window.location.href = '/';
 }
 
@@ -42,7 +42,10 @@ async function sendAuthRequest(url, payload, submitBtn) {
       return;
     }
 
-    sessionStorage.setItem('justchat_user', JSON.stringify(data.user));
+    sessionStorage.setItem(
+      'justchat_session',
+      JSON.stringify({ token: data.token, user: data.user })
+    );
     window.location.href = '/';
   } catch {
     authError.textContent = 'Не вдалося з’єднатися із сервером';

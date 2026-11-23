@@ -6,10 +6,12 @@ dist/
 npm-debug.log*
 .env
 
+
+uploads/
 coverage/
 playwright-report/
 test-results/
-
+users.db
 .DS_Store
 Thumbs.db
 .vscode/

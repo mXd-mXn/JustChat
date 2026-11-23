@@ -12,6 +12,34 @@ body {
   padding: 24px 12px;
 }
 
+.avatar-btn {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 50%;
+  background: #2f81f7;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 2px solid #30363d;
+}
+
+.avatar-btn:hover {
+  border-color: #2f81f7;
+}
+
+.avatar-btn img,
+.msg-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
 .container {
   width: 100%;
   max-width: 600px;
@@ -212,11 +240,35 @@ button.small {
 }
 
 .msg {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
   padding: 8px 10px;
   border-radius: 6px;
   background: #161b22;
   font-size: 14px;
   word-break: break-word;
+}
+
+.msg-avatar {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  border-radius: 50%;
+  background: #30363d;
+  color: #e6edf3;
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  margin-top: 2px;
+}
+
+.msg-content {
+  flex: 1;
+  min-width: 0;
 }
 
 .msg-meta {

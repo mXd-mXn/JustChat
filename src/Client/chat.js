@@ -1,10 +1,18 @@
-const savedUser = sessionStorage.getItem('justchat_user');
-if (!savedUser) {
+const rawSession = sessionStorage.getItem('justchat_session');
+if (!rawSession) {
   window.location.href = '/auth.html';
 }
 
-const currentUser = JSON.parse(savedUser);
+const session = JSON.parse(rawSession);
+if (!session?.token || !session?.user) {
+  sessionStorage.removeItem('justchat_session');
+  window.location.href = '/auth.html';
+}
 
+let currentUser = session.user;
+
+const avatarBtn = document.getElementById('avatar-btn');
+const avatarInput = document.getElementById('avatar-input');
 const currentUserLabel = document.getElementById('current-user-label');
 const logoutBtn = document.getElementById('logout-btn');
 
@@ -34,20 +42,43 @@ const messagesBox = document.getElementById('messages-box');
 const messageForm = document.getElementById('message-form');
 const messageInput = document.getElementById('message-input');
 
-currentUserLabel.textContent = `@${currentUser.username}`;
+function renderAvatarContent(container, username, avatarUrl) {
+  container.innerHTML = '';
+  if (avatarUrl) {
+    const img = document.createElement('img');
+    img.src = avatarUrl;
+    img.alt = username;
+    container.appendChild(img);
+  } else {
+    container.textContent = (username || '?')[0].toUpperCase();
+  }
+}
+
+function updateProfileUI() {
+  currentUserLabel.textContent = `@${currentUser.username}`;
+  renderAvatarContent(avatarBtn, currentUser.username, currentUser.avatar_path);
+}
+
+updateProfileUI();
 
 let rooms = [];
 let pendingRoom = null;
 let activeRoom = null;
 
+// Підключаємо WebSocket із токеном сесії
 const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-const ws = new WebSocket(`${protocol}//${window.location.host}`);
+const ws = new WebSocket(`${protocol}//${window.location.host}?token=${encodeURIComponent(session.token)}`);
 
 ws.addEventListener('open', () => {
   statusBadge.textContent = 'Онлайн';
 });
 
-ws.addEventListener('close', () => {
+ws.addEventListener('close', (event) => {
+  if (event.code === 4001) {
+    sessionStorage.removeItem('justchat_session');
+    window.location.href = '/auth.html';
+    return;
+  }
   statusBadge.textContent = 'Відключено';
   if (activeRoom) {
     addSystemMessage("З'єднання з сервером втрачено");
@@ -80,7 +111,7 @@ ws.addEventListener('message', (event) => {
     messagesBox.innerHTML = '';
 
     if (Array.isArray(data.history)) {
-      data.history.forEach((m) => addChatMessage(m.sender, m.text));
+      data.history.forEach((m) => addChatMessage(m.sender, m.text, m.avatar));
     }
 
     messageInput.focus();
@@ -88,7 +119,7 @@ ws.addEventListener('message', (event) => {
   }
 
   if (data.type === 'message') {
-    addChatMessage(data.sender, data.text);
+    addChatMessage(data.sender, data.text, data.avatar);
     return;
   }
 
@@ -102,9 +133,60 @@ ws.addEventListener('message', (event) => {
   }
 });
 
+// Завантаження аватарки при кліку на іконку профілю
+avatarBtn.addEventListener('click', () => {
+  avatarInput.click();
+});
+
+avatarInput.addEventListener('change', () => {
+  const file = avatarInput.files?.[0];
+  if (!file) return;
+
+  if (file.size > 3 * 1024 * 1024) {
+    roomsError.textContent = 'Максимальний розмір аватарки — 3 МБ';
+    avatarInput.value = '';
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = async () => {
+    try {
+      const res = await fetch('/api/avatar', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.token}`
+        },
+        body: JSON.stringify({ image: reader.result })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        roomsError.textContent = data.error || 'Помилка завантаження аватарки';
+        return;
+      }
+
+      currentUser = data.user;
+      session.user = data.user;
+      sessionStorage.setItem('justchat_session', JSON.stringify(session));
+      updateProfileUI();
+      roomsError.textContent = '';
+
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'refresh_profile' }));
+      }
+    } catch {
+      roomsError.textContent = 'Не вдалося завантажити аватарку';
+    } finally {
+      avatarInput.value = '';
+    }
+  };
+  reader.readAsDataURL(file);
+});
+
 logoutBtn.addEventListener('click', () => {
   ws.close();
-  sessionStorage.removeItem('justchat_user');
+  sessionStorage.removeItem('justchat_session');
   window.location.href = '/auth.html';
 });
 
@@ -219,7 +301,6 @@ function requestJoinRoom(roomId, password) {
     JSON.stringify({
       type: 'join_room',
       roomId,
-      username: currentUser.username,
       password
     })
   );
@@ -234,9 +315,16 @@ function addSystemMessage(text) {
   messagesBox.scrollTop = messagesBox.scrollHeight;
 }
 
-function addChatMessage(sender, text) {
+function addChatMessage(sender, text, avatar = null) {
   const el = document.createElement('div');
   el.className = 'msg';
+
+  const avatarEl = document.createElement('div');
+  avatarEl.className = 'msg-avatar';
+  renderAvatarContent(avatarEl, sender, avatar);
+
+  const contentEl = document.createElement('div');
+  contentEl.className = 'msg-content';
 
   const meta = document.createElement('div');
   meta.className = 'msg-meta';
@@ -245,7 +333,8 @@ function addChatMessage(sender, text) {
   const body = document.createElement('div');
   body.textContent = text;
 
-  el.append(meta, body);
+  contentEl.append(meta, body);
+  el.append(avatarEl, contentEl);
   messagesBox.appendChild(el);
   messagesBox.scrollTop = messagesBox.scrollHeight;
 }
@@ -259,7 +348,7 @@ messageForm.addEventListener('submit', (e) => {
     JSON.stringify({
       type: 'message',
       text
-    })
+    })  
   );
 
   messageInput.value = '';
