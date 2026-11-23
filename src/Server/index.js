@@ -7,13 +7,18 @@ import { roomRepo } from './temp_db.js';
 import { userRepo } from './accounts_db.js';
 
 const PORT = 3000;
+const SESSION_SECRET = process.env.SESSION_SECRET || 'justchat-local-secret-change-in-prod';
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 днів
+const AVATARS_DIR = path.join(process.cwd(), 'uploads', 'avatars');
 
-// Хешування паролів кімнат (швидке, для RAM)
+await fs.mkdir(AVATARS_DIR, { recursive: true });
+
+// Хешування паролів кімнат (RAM)
 function hashRoomPassword(password) {
   return crypto.createHash('sha256').update(password).digest('hex');
 }
 
-// Надійне хешування паролів акаунтів із сіллю (для постійної БД)
+// Хешування паролів акаунтів (Disk)
 function hashAccountPassword(password) {
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = crypto.scryptSync(password, salt, 64).toString('hex');
@@ -31,18 +36,64 @@ function verifyAccountPassword(password, storedHash) {
   return crypto.timingSafeEqual(keyBuffer, derivedKey);
 }
 
+// Підписані токени сесії (витримують перезапуск сервера під час розробки)
+function createSessionToken(userId) {
+  const payload = Buffer.from(
+    JSON.stringify({ userId, exp: Date.now() + SESSION_TTL_MS })
+  ).toString('base64url');
+  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
+  return `${payload}.${sig}`;
+}
+
+function verifySessionToken(token) {
+  if (!token || typeof token !== 'string') return null;
+  const [payload, sig] = token.split('.');
+  if (!payload || !sig) return null;
+
+  const expectedSig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
+  const sigBuf = Buffer.from(sig);
+  const expectedBuf = Buffer.from(expectedSig);
+  if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+    return null;
+  }
+
+  try {
+    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    if (!data.userId || !data.exp || data.exp < Date.now()) return null;
+    return userRepo.getUserById(data.userId) || null;
+  } catch {
+    return null;
+  }
+}
+
+function getAuthenticatedUserFromRequest(req) {
+  const authHeader = req.headers.authorization || '';
+  if (!authHeader.startsWith('Bearer ')) return null;
+  const token = authHeader.slice(7).trim();
+  return verifySessionToken(token);
+}
+
+function sanitizeUser(user) {
+  return {
+    id: user.id,
+    username: user.username,
+    email: user.email,
+    avatar_path: user.avatar_path
+  };
+}
+
 function sendHttpJson(res, statusCode, payload) {
   res.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(payload));
 }
 
-function readJsonBody(req) {
+function readJsonBody(req, maxBytes = 1e5) {
   return new Promise((resolve, reject) => {
     let body = '';
     req.on('data', (chunk) => {
       body += chunk;
-      if (body.length > 1e5) {
-        reject(new Error('Занадто великий запит'));
+      if (body.length > maxBytes) {
+        reject(new Error('Занадто великий файл або запит'));
       }
     });
     req.on('end', () => {
@@ -56,11 +107,12 @@ function readJsonBody(req) {
   });
 }
 
-// 1. HTTP-сервер (API авторизації + роздача статики)
+// 1. HTTP-сервер
 const server = http.createServer(async (req, res) => {
-  const cleanUrl = (req.url || '/').split('?')[0];
+  const parsedUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+  const cleanUrl = parsedUrl.pathname;
 
-  // Реєстрація користувача
+  // Реєстрація
   if (req.method === 'POST' && cleanUrl === '/api/register') {
     try {
       const body = await readJsonBody(req);
@@ -82,14 +134,8 @@ const server = http.createServer(async (req, res) => {
       userRepo.createUser(username, email, passwordHash);
 
       const createdUser = userRepo.getUserByEmail(email);
-      return sendHttpJson(res, 201, {
-        user: {
-          id: createdUser.id,
-          username: createdUser.username,
-          email: createdUser.email,
-          avatar_path: createdUser.avatar_path
-        }
-      });
+      const token = createSessionToken(createdUser.id);
+      return sendHttpJson(res, 201, { token, user: sanitizeUser(createdUser) });
     } catch (err) {
       if (err.code === 'SQLITE_CONSTRAINT_UNIQUE' || String(err.message).includes('UNIQUE')) {
         const msg = String(err.message).includes('users.email')
@@ -101,7 +147,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // Вхід користувача
+  // Вхід за нікнеймом
   if (req.method === 'POST' && cleanUrl === '/api/login') {
     try {
       const body = await readJsonBody(req);
@@ -112,33 +158,92 @@ const server = http.createServer(async (req, res) => {
         return sendHttpJson(res, 400, { error: 'Введи нікнейм та пароль' });
       }
 
-        const user = userRepo.getUserByUsername(username);
-        if (!user || !verifyAccountPassword(password, user.password_hash)) {
-          return sendHttpJson(res, 401, { error: 'Невірний нікнейм або пароль' });
-        }
+      const user = userRepo.getUserByUsername(username);
+      if (!user || !verifyAccountPassword(password, user.password_hash)) {
+        return sendHttpJson(res, 401, { error: 'Невірний нікнейм або пароль' });
+      }
 
-      return sendHttpJson(res, 200, {
-        user: {
-          id: user.id,
-          username: user.username,
-          email: user.email,
-          avatar_path: user.avatar_path
-        }
-      });
+      const token = createSessionToken(user.id);
+      return sendHttpJson(res, 200, { token, user: sanitizeUser(user) });
     } catch (err) {
       return sendHttpJson(res, 400, { error: err.message || 'Помилка входу' });
     }
   }
 
-  // Роздача статичних файлів із src/client
-  let filePath = path.join(
-    process.cwd(),
-    'src',
-    'client',
-    cleanUrl === '/' ? 'index.html' : cleanUrl
-  );
+  // Завантаження аватарки (тільки для авторизованих)
+  if (req.method === 'POST' && cleanUrl === '/api/avatar') {
+    const user = getAuthenticatedUserFromRequest(req);
+    if (!user) {
+      return sendHttpJson(res, 401, { error: 'Сесія недійсна. Увійди знову' });
+    }
 
-  if (!filePath.startsWith(path.join(process.cwd(), 'src', 'client'))) {
+    try {
+      // Дозволяємо до ~4.5 МБ Base64 (~3 МБ зображення)
+      const body = await readJsonBody(req, 4.5 * 1024 * 1024);
+      const imageData = String(body.image || '');
+
+      const match = imageData.match(/^data:image\/(png|jpeg|jpg|webp);base64,([A-Za-z0-9+/=]+)$/);
+      if (!match) {
+        return sendHttpJson(res, 400, { error: 'Підтримуються лише PNG, JPG або WebP' });
+      }
+
+      const ext = match[1] === 'jpeg' ? 'jpg' : match[1];
+      const buffer = Buffer.from(match[2], 'base64');
+
+      if (buffer.length > 3 * 1024 * 1024) {
+        return sendHttpJson(res, 400, { error: 'Максимальний розмір аватарки — 3 МБ' });
+      }
+
+      const fileName = `user-${user.id}-${Date.now()}.${ext}`;
+      const fullPath = path.join(AVATARS_DIR, fileName);
+      await fs.writeFile(fullPath, buffer);
+
+      // Видаляємо старий файл аватарки, щоб не засмічувати диск
+      if (user.avatar_path && user.avatar_path.startsWith('/uploads/avatars/')) {
+        const oldFile = path.join(AVATARS_DIR, path.basename(user.avatar_path));
+        await fs.unlink(oldFile).catch(() => {});
+      }
+
+      const publicUrl = `/uploads/avatars/${fileName}`;
+      userRepo.updateAvatar(user.id, publicUrl);
+
+      const updatedUser = userRepo.getUserById(user.id);
+      return sendHttpJson(res, 200, { user: sanitizeUser(updatedUser) });
+    } catch (err) {
+      return sendHttpJson(res, 400, { error: err.message || 'Не вдалося зберегти аватарку' });
+    }
+  }
+
+  // Роздача завантажених аватарок
+  if (req.method === 'GET' && cleanUrl.startsWith('/uploads/avatars/')) {
+    const requestedFile = path.basename(cleanUrl);
+    const filePath = path.join(AVATARS_DIR, requestedFile);
+
+    try {
+      const data = await fs.readFile(filePath);
+      let contentType = 'application/octet-stream';
+      if (filePath.endsWith('.png')) contentType = 'image/png';
+      if (filePath.endsWith('.jpg') || filePath.endsWith('.jpeg')) contentType = 'image/jpeg';
+      if (filePath.endsWith('.webp')) contentType = 'image/webp';
+
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Cache-Control': 'public, max-age=86400'
+      });
+      res.end(data);
+      return;
+    } catch {
+      res.writeHead(404);
+      res.end('Avatar not found');
+      return;
+    }
+  }
+
+  // Роздача статики клієнта
+  const clientDir = path.join(process.cwd(), 'src', 'client');
+  let filePath = path.join(clientDir, cleanUrl === '/' ? 'index.html' : cleanUrl);
+
+  if (!filePath.startsWith(clientDir)) {
     res.writeHead(403);
     res.end('Access denied');
     return;
@@ -164,7 +269,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-// 2. WebSocket-сервер і логіка кімнат у RAM
+// 2. WebSocket-сервер із перевіркою токена
 const wss = new WebSocketServer({ server });
 
 function sendJson(ws, payload) {
@@ -204,7 +309,7 @@ function broadcastToRoom(roomId, payload) {
 
 function leaveCurrentRoom(ws) {
   const prevRoomId = ws.roomId;
-  const username = ws.username;
+  const username = ws.user?.username;
   if (!prevRoomId) return;
 
   ws.roomId = null;
@@ -223,9 +328,18 @@ function leaveCurrentRoom(ws) {
   broadcastRoomsList();
 }
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+  const parsedUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+  const token = parsedUrl.searchParams.get('token');
+  const authenticatedUser = verifySessionToken(token);
+
+  if (!authenticatedUser) {
+    ws.close(4001, 'Unauthorized');
+    return;
+  }
+
   ws.roomId = null;
-  ws.username = null;
+  ws.user = sanitizeUser(authenticatedUser);
 
   const initialRooms = roomRepo.getAllRooms().map((room) => ({
     ...room,
@@ -238,6 +352,15 @@ wss.on('connection', (ws) => {
     try {
       data = JSON.parse(raw.toString());
     } catch {
+      return;
+    }
+
+    // Оновлення кешованого профілю в сокеті після зміни аватарки
+    if (data.type === 'refresh_profile') {
+      const freshUser = userRepo.getUserById(ws.user.id);
+      if (freshUser) {
+        ws.user = sanitizeUser(freshUser);
+      }
       return;
     }
 
@@ -272,9 +395,15 @@ wss.on('connection', (ws) => {
       leaveCurrentRoom(ws);
 
       ws.roomId = room.id;
-      ws.username = String(data.username || 'anon').trim();
 
-      const history = roomRepo.getMessages(room.id);
+      // Підтягуємо актуальні аватарки авторів для історії кімнати
+      const history = roomRepo.getMessages(room.id).map((m) => ({
+        sender: m.sender,
+        text: m.text,
+        created_at: m.created_at,
+        avatar: userRepo.getUserByUsername(m.sender)?.avatar_path || null
+      }));
+
       sendJson(ws, {
         type: 'joined_room',
         room: { id: room.id, name: room.name },
@@ -283,7 +412,7 @@ wss.on('connection', (ws) => {
 
       broadcastToRoom(room.id, {
         type: 'system',
-        text: `${ws.username} приєднався до кімнати`
+        text: `${ws.user.username} приєднався до кімнати`
       });
 
       broadcastRoomsList();
@@ -291,14 +420,16 @@ wss.on('connection', (ws) => {
     }
 
     if (data.type === 'message') {
-      if (!ws.roomId || !ws.username) return;
+      if (!ws.roomId || !ws.user) return;
       const text = String(data.text || '').trim();
       if (!text) return;
 
-      roomRepo.addMessage(ws.roomId, ws.username, text);
+      // Автор береться виключно із перевіреної сесії ws.user
+      roomRepo.addMessage(ws.roomId, ws.user.username, text);
       broadcastToRoom(ws.roomId, {
         type: 'message',
-        sender: ws.username,
+        sender: ws.user.username,
+        avatar: ws.user.avatar_path,
         text
       });
       return;
